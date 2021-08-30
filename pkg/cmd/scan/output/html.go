@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type HTML struct {
 }
 
 type HTMLTemplateParams struct {
+	IsSync          bool
 	ScanDate        string
 	Coverage        int
 	Summary         analyser.Summary
@@ -94,6 +96,13 @@ func (c *HTML) Write(analysis *analyser.Analysis) error {
 
 			return distinctResourceTypes(resources)
 		},
+		"getIaCSources": func() []string {
+			resources := make([]*resource.Resource, 0)
+			resources = append(resources, analysis.Deleted()...)
+			resources = append(resources, analysis.Managed()...)
+
+			return distinctIaCSources(resources)
+		},
 		"rate": func(count int) float64 {
 			if analysis.Summary().TotalResources == 0 {
 				return 0
@@ -123,7 +132,7 @@ func (c *HTML) Write(analysis *analyser.Analysis) error {
 				case diff.UPDATE:
 					prefix := fmt.Sprintf("%s %s:", "~", path)
 					if change.JsonString {
-						_, _ = fmt.Fprintf(&buf, "%s%s<br>%s%s<br>", whiteSpace, prefix, whiteSpace, jsonDiff(change.From, change.To, whiteSpace))
+						_, _ = fmt.Fprintf(&buf, "%s%s<br>%s%s<br>", whiteSpace, prefix, whiteSpace, jsonDiffHTML(change.From, change.To))
 						continue
 					}
 					_, _ = fmt.Fprintf(&buf, "%s%s <span class=\"code-box-line-delete\">%s</span> => <span class=\"code-box-line-create\">%s</span>", whiteSpace, prefix, htmlPrettify(change.From), htmlPrettify(change.To))
@@ -145,6 +154,7 @@ func (c *HTML) Write(analysis *analyser.Analysis) error {
 	}
 
 	data := &HTMLTemplateParams{
+		IsSync:          analysis.IsSync(),
 		ScanDate:        analysis.Date.Format("Jan 02, 2006"),
 		Coverage:        analysis.Coverage(),
 		Summary:         analysis.Summary(),
@@ -174,13 +184,36 @@ func distinctResourceTypes(resources []*resource.Resource) []string {
 	for _, res := range resources {
 		found := false
 		for _, v := range types {
-			if v == res.TerraformType() {
+			if v == res.ResourceType() {
 				found = true
 				break
 			}
 		}
 		if !found {
-			types = append(types, res.TerraformType())
+			types = append(types, res.ResourceType())
+		}
+	}
+
+	return types
+}
+
+func distinctIaCSources(resources []*resource.Resource) []string {
+	types := make([]string, 0)
+
+	for _, res := range resources {
+		if res.Src() == nil {
+			continue
+		}
+
+		found := false
+		for _, v := range types {
+			if v == res.Src().Source() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			types = append(types, res.Src().Source())
 		}
 	}
 
@@ -193,4 +226,16 @@ func htmlPrettify(resource interface{}) string {
 		return "null"
 	}
 	return awsutil.Prettify(resource)
+}
+
+func jsonDiffHTML(a, b interface{}) string {
+	diffStr := jsonDiff(a, b, false)
+
+	re := regexp.MustCompile(`(?m)^(?P<value>(\-)(.*))$`)
+	diffStr = re.ReplaceAllString(diffStr, `<span class="code-box-line-delete">$value</span>`)
+
+	re = regexp.MustCompile(`(?m)^(?P<value>(\+)(.*))$`)
+	diffStr = re.ReplaceAllString(diffStr, `<span class="code-box-line-create">$value</span>`)
+
+	return diffStr
 }
